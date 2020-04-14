@@ -102,30 +102,13 @@ internal object Renderer {
 
     private fun byteToUnsign(b: Int): String = b.toString()
 
-    /**
-     * Converts a value to a two's complement hex number.
-     *
-     * By two's complement, I mean that -1 becomes 0xFFFFFFFF not -0x1.
-     *
-     * @param value the value to convert
-     * @return the hexadecimal string corresponding to that value
-     * @todo move this?
-     */
-    fun toHex(value: Int): String {
-        var remainder = value.toLong()
-        var suffix = ""
-
-        repeat(8) {
-            val hexDigit = hexMap[(remainder and 15).toInt()]
-            suffix = hexDigit + suffix
-            remainder = remainder ushr 4
-        }
-
-        return "0x" + suffix
-    }
-
     fun toHex(value: Number): String {
-        return toHex(value.toInt()) // FIXME
+        val minLen = when (value) {
+            is Int -> 8
+            is Long -> 16
+            else -> 16
+        }
+        return String.format("0x%0${minLen}X", value)
     }
 
     private fun toUnsigned(value: Int): String =
