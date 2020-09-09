@@ -89,6 +89,8 @@ object Driver {
         val callingConventionReport by cli.flagArgument(listOf("-cc", "--callingConvention"), "Runs the calling convention checker.", false, true)
         val callingConventionRetOnlya0 by cli.flagArgument(listOf("--retToAllA"), "If this flag is enabled, the calling convention checker will assume all `a` register can be used to return values. If this is not there, then it will assume only a0 will be returned.", true, false)
 
+        val coverageFile by cli.flagValueArgument(listOf("-cf", "--coverageFile"), "Coverage File", "Specifies a file for the coverage output.", "")
+
         val assemblyTextFile by cli.positionalArgument("file", "This is the file/filepath you want to assemble", "", minArgs = 1)
         val simArgs by cli.positionalArgumentsList("simulatorArgs", "Args which are put into the simulated program.")
 
@@ -175,14 +177,18 @@ object Driver {
             } else if (dumpInsts) {
                 dump()
             } else {
+                val ccReporter = if (callingConventionReport) CallingConventionCheck(sim, callingConventionRetOnlya0) else null
+                val coverage = if(coverageFile.isNotEmpty()) Coverage(sim) else null
+                val plugins = listOfNotNull(ccReporter, coverage)
                 try {
-                    if (callingConventionReport) {
-                        val ccReporter = CallingConventionCheck(sim, callingConventionRetOnlya0)
-                        if (ccReporter.run() > 0) {
-                            exitProcess(-1)
+                    sim.run(plugins)
+                    if (ccReporter != null && ccReporter.finish() > 0) {
+                        exitProcess(-1)
+                    }
+                    if (coverage != null) {
+                        File(coverageFile).bufferedWriter().use { out ->
+                            coverage.finish().forEach { line -> out.appendln(line) }
                         }
-                    } else {
-                        sim.run()
                     }
                 } catch (e: SimulatorError) {
                     // pass
