@@ -6,15 +6,46 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.lang.Exception
+import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.system.exitProcess
 
 val VENUS_AUTH_TOKEN = "1yJPLzMSwOYPYqsLegJ8NpvJXdIC7PcrWLtPxPpZ6DzI9BsFv3iGwIpilpgVy0M7TmmEA063VUkBYIHezoes4vHF6m0mZA8DuTh"
 val VENUS_FS_API_PATH = "/api/fs"
 val VENUS_FS_VERSION = "1.0.0"
+
+// By default we bind to loopback - this may become configurable in the future.
+val DEFAULT_HOST = "127.0.0.1"
+
 class Mounter(var port: String, var dir: String) {
 //    data class LoginToken(var token: String, var expiration: String)
 //    val tokens: MutableMap<String, String>
+
+    private val baseAbsPath: Path
+
+    /**
+     * Checks that a path is within the directory that was mounted.
+     * This mitigates potential RCE vulnerabilities by preventing file operations to paths like "~/.bashrc".
+     * All file operations should call this function.
+     *
+     * @param targetPath the path of the file to access, relative to the directory the mount was initialized to
+     * @param names additional components of the path of the file to be found
+     * @param verbose prints the absolute path of the requested file if true
+     * @returns the file object if access is allowed, otherwise null
+     */
+    private fun validateFilePath(targetPath: String, vararg names: String, verbose: Boolean=true): File? {
+        val fpath = Paths.get(System.getProperty("user.dir"), targetPath, *names).normalize()
+        if (verbose) {
+            println(fpath.toUri())
+        }
+        val fp = File(fpath.toUri())
+        return if (!fpath.startsWith(baseAbsPath)) {
+            null
+        } else {
+            fp
+        }
+    }
+
     @Serializable
     data class GenericRequest(val data: String)
     data class GenericResponse(val success: Boolean, val data: Any)
@@ -26,9 +57,10 @@ class Mounter(var port: String, var dir: String) {
             exitProcess(1)
         }
         System.setProperty("user.dir", fdir.absolutePath)
+        baseAbsPath = Paths.get(fdir.absolutePath).normalize()
         val app: Javalin = Javalin.create { config ->
             config.enableCorsForAllOrigins()
-        }.start(port.toInt())
+        }.start(DEFAULT_HOST, port.toInt())
         app.routes {
 //            post("/login") { ctx ->
 //                val auth_token = ctx.body()
@@ -56,9 +88,8 @@ class Mounter(var port: String, var dir: String) {
                     if (filepath == "") {
                         filepath = "."
                     }
-                    println(filepath)
-                    val fp = File(Paths.get(System.getProperty("user.dir"), filepath).toUri())
-                    if (!fp.exists()) {
+                    val fp = validateFilePath(filepath)
+                    if (fp == null) {
                         ctx.json(GenericResponse(false, "$filepath: No such file or directory"))
                     } else {
                         val list = fp.list()
@@ -78,11 +109,8 @@ class Mounter(var port: String, var dir: String) {
                 try {
                     val req = Json.parse(fileinfoRequest.serializer(), rdat)
                     val name = req.name
-                    val path = req.path
-                    val fname = Paths.get(System.getProperty("user.dir"), path, name).toUri()
-                    println(fname)
-                    val fp = File(fname)
-                    if (!fp.exists()) {
+                    val fp = validateFilePath(req.path, name)
+                    if (fp == null) {
                         ctx.json(fileinfoResponse(false, data = "$name: No such file or directory"))
                     } else {
                         ctx.json(fileinfoResponse(true, name = name, type = if (fp.isFile) { "file" } else { "dir" }))
@@ -102,10 +130,8 @@ class Mounter(var port: String, var dir: String) {
                 try {
                     val req = Json.parse(filereadRequest.serializer(), rdat)
                     val path = req.path
-                    val fname = Paths.get(System.getProperty("user.dir"), path).toUri()
-                    println(fname)
-                    val fp = File(fname)
-                    if (!fp.exists()) {
+                    val fp = validateFilePath(path)
+                    if (fp == null) {
                         ctx.json(filereadResponse(false, data = "$path: No such file or directory"))
                     } else if (!fp.isFile) {
                         ctx.json(filereadResponse(false, data = "$path: Is not file"))
@@ -128,10 +154,8 @@ class Mounter(var port: String, var dir: String) {
                 try {
                     val req = Json.parse(filewriteRequest.serializer(), rdat)
                     val path = req.path
-                    val fname = Paths.get(System.getProperty("user.dir"), path).toUri()
-                    println(fname)
-                    val fp = File(fname)
-                    if (!fp.exists()) {
+                    val fp = validateFilePath(path)
+                    if (fp == null) {
                         ctx.json(filewriteResponse(false, data = "$path: No such file or directory"))
                     } else if (!fp.isFile) {
                         ctx.json(filewriteResponse(false, data = "$path: No such file or directory"))
@@ -155,13 +179,15 @@ class Mounter(var port: String, var dir: String) {
                 try {
                     val req = Json.parse(mkdirRequest.serializer(), rdat)
                     val path = req.path
-                    val fname = Paths.get(System.getProperty("user.dir"), path).toUri()
-                    println(fname)
-                    val fp = File(fname)
-                    if (fp.exists()) {
-                        ctx.json(mkdirResponse(false, data = "$path: Already exists"))
+                    val fp = validateFilePath(path)
+                    val s = if (fp != null) {
+                        if (fp.exists()) {
+                            ctx.json(mkdirResponse(false, data = "$path: Already exists"))
+                        }
+                        fp.mkdir()
+                    } else {
+                        false
                     }
-                    val s = fp.mkdir()
                     ctx.json(mkdirResponse(s, if (!s) { "$path: Failed to create the directory" } else { "" }))
                 } catch (e: Exception) {
                     ctx.json(mkdirResponse(false, "Internal server error: $e"))
@@ -178,13 +204,15 @@ class Mounter(var port: String, var dir: String) {
                 try {
                     val req = Json.parse(touchRequest.serializer(), rdat)
                     val path = req.path
-                    val fname = Paths.get(System.getProperty("user.dir"), path).toUri()
-                    println(fname)
-                    val fp = File(fname)
-                    if (fp.exists()) {
-                        ctx.json(touchResponse(false, data = "$path: Already exists"))
+                    val fp = validateFilePath(path)
+                    val s = if (fp != null) {
+                        if (fp.exists()) {
+                            ctx.json(touchResponse(false, data = "$path: Already exists"))
+                        }
+                        fp.createNewFile()
+                    } else {
+                        false
                     }
-                    val s = fp.createNewFile()
                     ctx.json(touchResponse(s, if (!s) { "$path: Failed to create the file" } else { "" }))
                 } catch (e: Exception) {
                     ctx.json(touchResponse(false, "Internal server error: $e"))
@@ -201,13 +229,15 @@ class Mounter(var port: String, var dir: String) {
                 try {
                     val req = Json.parse(rmRequest.serializer(), rdat)
                     val path = req.path
-                    val fname = Paths.get(System.getProperty("user.dir"), path).toUri()
-                    println(fname)
-                    val fp = File(fname)
-                    if (!fp.exists()) {
-                        ctx.json(mkdirResponse(false, data = "$path: No such file or directory"))
+                    val fp = validateFilePath(path)
+                    val s = if (fp != null) {
+                        if (!fp.exists()) {
+                            ctx.json(mkdirResponse(false, data = "$path: No such file or directory"))
+                        }
+                        fp.deleteRecursively()
+                    } else {
+                        false
                     }
-                    val s = fp.deleteRecursively()
                     ctx.json(rmResponse(s, if (!s) { "$path: Failed to delete the file or directory" } else { "" }))
                 } catch (e: Exception) {
                     ctx.json(rmResponse(false, "Internal server error: $e"))
