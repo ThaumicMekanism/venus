@@ -134,6 +134,11 @@ import kotlin.dom.removeClass
         return (document.getElementById("ArgsList") as HTMLInputElement).value
     }
 
+    @JsName("registerECallReceiver")
+    fun registerECallReceiver(receiverFunction: (String) -> String) {
+        sim.registerECallReceiver(receiverFunction)
+    }
+
     @JsName("assembleSimulator") fun assembleSimulator() {
         var text = getText()
         if (text == "") {
